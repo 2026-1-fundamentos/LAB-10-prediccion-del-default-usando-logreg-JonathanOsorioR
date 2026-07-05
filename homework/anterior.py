@@ -97,141 +97,115 @@
 #
 
 import gzip
-import json
-import os
-import pickle
-import time
-
 import pandas as pd
-from sklearn.compose import ColumnTransformer
+import os
+import glob
+import pickle
+from sklearn.pipeline import Pipeline
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    balanced_accuracy_score,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-)
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
-
+from sklearn.model_selection import GridSearchCV
+import json
+import time
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import (
+    precision_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix
+)
 inicio = time.time()
-
 
 def limpieza(df):
     df = df.copy()
-    df = df.rename(columns={"default payment next month": "default"})
-    df = df.drop(columns="ID")
-    df = df[(df["EDUCATION"] != 0) & (df["MARRIAGE"] != 0)]
+    df = df.rename(columns = {'default payment next month': 'default'})
+    df = df.drop(columns = "ID")
+    df = df[(df['EDUCATION'] != 0) & (df['MARRIAGE'] != 0)]
     df = df.dropna()
-    df.loc[df["EDUCATION"] > 4, "EDUCATION"] = 4
+    df.loc[df['EDUCATION'] > 4, 'EDUCATION'] = 4
     return df
-
 
 train = limpieza(pd.read_csv("files/input/train_data.csv.zip", compression="zip"))
 test = limpieza(pd.read_csv("files/input/test_data.csv.zip", compression="zip"))
 
-x_test, y_test = test.drop(columns="default"), test["default"]
-x_train, y_train = train.drop(columns="default"), train["default"]
+x_test, y_test = test.drop(columns = "default"),test["default"]
+x_train, y_train = train.drop(columns = "default"),train["default"]
 
-cat_features = ["SEX", "EDUCATION", "MARRIAGE"]
+cat_features = ['SEX', 'EDUCATION', 'MARRIAGE']
 num_features = [col for col in x_train.columns if col not in cat_features]
 
 preprocessor = ColumnTransformer(
     transformers=[
-        # handle_unknown="ignore" evita que el pipeline reviente si el
-        # conjunto de calificación trae alguna categoria que no aparecio
-        # en x_train.
-        ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features),
-        ("num", MinMaxScaler(), num_features),
+        ('cat', OneHotEncoder(), cat_features),
+        ('num', MinMaxScaler(), num_features)
     ]
 )
 
-pipeline = Pipeline(
-    [
-        ("preprocessor", preprocessor),
-        ("feature_selection", SelectKBest(score_func=f_classif, k=10)),
-        ("classifier", LogisticRegression(max_iter=1000, random_state=42)),
-    ]
-)
-
-# cv=10 (entero) usa StratifiedKFold con shuffle=False, es decir, arma los
-# folds respetando el orden original del CSV. Si las filas tienen algun
-# orden latente (por ejemplo, quedaron agrupadas por monto de credito o por
-# fecha de alta), cada fold deja de ser una muestra representativa y la
-# búsqueda de hiperparámetros puede terminar escogiendo una combinación
-# subóptima. Mezclamos explícitamente con shuffle=True (mismos 10 splits
-# que pide el enunciado) para que la estimación por validación cruzada sea
-# más confiable.
-cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('feature_selection', SelectKBest(score_func=f_classif, k=10)),
+    ('classifier', LogisticRegression(max_iter=1000, random_state=42))
+])
 
 param_grid = {
-    # cat_features generan 9 columnas dummy (2 de SEX + 4 de EDUCATION + 3
-    # de MARRIAGE) y num_features aporta 20 columnas mas, para un total de
-    # 29 columnas tras el preprocesamiento. Exploramos todo ese rango en
-    # vez de solo [10, 15, 20]: con k=[10, 15, 20] el mejor modelo posible
-    # quedaba fuera del espacio de búsqueda.
-    "feature_selection__k": range(1, 30),
-    # Rango de regularización mas amplio que el original ([0.01 .. 100]);
-    # probamos también los extremos 0.001 y 1000 por si el óptimo estaba
-    # justo en el borde del grid anterior.
-    "classifier__C": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0],
+    # Exploramos cuántas variables son óptimas
+    'feature_selection__k': [10, 15, 20],
+    
+    # Afinamos la regularización (fuerza de aprendizaje)
+    'classifier__C': [0.01, 0.1, 1.0, 10.0, 100.0]
+    
+    # ¡Cero rastro de class_weight aquí!
 }
 
-grid_search = GridSearchCV(
-    estimator=pipeline,
+
+grid_search =GridSearchCV(
+    estimator=pipeline, # (Revisa que tenga tu variable correcta)
     param_grid=param_grid,
-    cv=cv,
-    scoring="balanced_accuracy",
-    n_jobs=-1,
+    cv=10,
+    scoring='balanced_accuracy', 
+    n_jobs=-1
 )
 
+# Ejecutamos la optimización
 grid_search.fit(x_train, y_train)
-
-print("Mejores hiperparametros:", grid_search.best_params_)
-print("Mejor balanced_accuracy (CV):", grid_search.best_score_)
-
 os.makedirs("files/models", exist_ok=True)
 with gzip.open("files/models/model.pkl.gz", "wb") as file:
     pickle.dump(grid_search, file)
 
 os.makedirs("files/output", exist_ok=True)
 
-
 def calcular_y_guardar_metricas(x, y, model, dataset_name):
     y_pred = model.predict(x)
-
+    
     # Calculamos las métricas clave
     metricas = {
         "type": "metrics",
-        "dataset": dataset_name,
-        "precision": precision_score(y, y_pred, zero_division=0),
-        "balanced_accuracy": balanced_accuracy_score(y, y_pred),
-        "recall": recall_score(y, y_pred, zero_division=0),
-        "f1_score": f1_score(y, y_pred, zero_division=0),
+        'dataset': dataset_name,
+        'precision': precision_score(y, y_pred, zero_division=0),
+        'balanced_accuracy': balanced_accuracy_score(y, y_pred),
+        'recall': recall_score(y, y_pred),
+        'f1_score': f1_score(y, y_pred)
     }
-
+    
     # Calculamos la matriz de confusión
     cm = confusion_matrix(y, y_pred)
     matriz = {
-        "type": "cm_matrix",
-        "dataset": dataset_name,
-        "true_0": {"predicted_0": int(cm[0, 0]), "predicted_1": int(cm[0, 1])},
-        "true_1": {"predicted_0": int(cm[1, 0]), "predicted_1": int(cm[1, 1])},
+        'type': 'cm_matrix',
+        'dataset': dataset_name,
+        'true_0': {"predicted_0": int(cm[0, 0]), "predicted_1": int(cm[0, 1])},
+        'true_1': {"predicted_0": int(cm[1, 0]), "predicted_1": int(cm[1, 1])}
     }
-
+    
     return metricas, matriz
 
-
-train_m, train_cm = calcular_y_guardar_metricas(x_train, y_train, grid_search, "train")
-test_m, test_cm = calcular_y_guardar_metricas(x_test, y_test, grid_search, "test")
+train_m, train_cm = calcular_y_guardar_metricas(x_train, y_train, grid_search, 'train')
+test_m, test_cm = calcular_y_guardar_metricas(x_test, y_test, grid_search, 'test')
 
 with open("files/output/metrics.json", "w") as f:
     for item in [train_m, test_m, train_cm, test_cm]:
         f.write(json.dumps(item) + "\n")
-
 fin = time.time()
-print(fin - inicio)
+print(fin-inicio)
 print("fin")
