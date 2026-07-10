@@ -141,9 +141,7 @@ num_features = [col for col in x_train.columns if col not in cat_features]
 
 preprocessor = ColumnTransformer(
     transformers=[
-        # handle_unknown="ignore" evita que el pipeline reviente si el
-        # conjunto de calificación trae alguna categoria que no aparecio
-        # en x_train.
+
         ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features),
         ("num", MinMaxScaler(), num_features),
     ]
@@ -157,27 +155,13 @@ pipeline = Pipeline(
     ]
 )
 
-# cv=10 (entero) usa StratifiedKFold con shuffle=False, es decir, arma los
-# folds respetando el orden original del CSV. Si las filas tienen algun
-# orden latente (por ejemplo, quedaron agrupadas por monto de credito o por
-# fecha de alta), cada fold deja de ser una muestra representativa y la
-# búsqueda de hiperparámetros puede terminar escogiendo una combinación
-# subóptima. Mezclamos explícitamente con shuffle=True (mismos 10 splits
-# que pide el enunciado) para que la estimación por validación cruzada sea
-# más confiable.
 cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
 
 param_grid = {
-    # cat_features generan 9 columnas dummy (2 de SEX + 4 de EDUCATION + 3
-    # de MARRIAGE) y num_features aporta 20 columnas mas, para un total de
-    # 29 columnas tras el preprocesamiento. Exploramos todo ese rango en
-    # vez de solo [10, 15, 20]: con k=[10, 15, 20] el mejor modelo posible
-    # quedaba fuera del espacio de búsqueda.
-    "feature_selection__k": range(1, 30),
-    # Rango de regularización mas amplio que el original ([0.01 .. 100]);
-    # probamos también los extremos 0.001 y 1000 por si el óptimo estaba
-    # justo en el borde del grid anterior.
-    "classifier__C": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0],
+
+    "feature_selection__k": [1],
+
+    "classifier__C": [1],
 }
 
 grid_search = GridSearchCV(
@@ -186,6 +170,7 @@ grid_search = GridSearchCV(
     cv=cv,
     scoring="balanced_accuracy",
     n_jobs=-1,
+    verbose = 3,
 )
 
 grid_search.fit(x_train, y_train)
@@ -203,7 +188,6 @@ os.makedirs("files/output", exist_ok=True)
 def calcular_y_guardar_metricas(x, y, model, dataset_name):
     y_pred = model.predict(x)
 
-    # Calculamos las métricas clave
     metricas = {
         "type": "metrics",
         "dataset": dataset_name,
@@ -213,7 +197,6 @@ def calcular_y_guardar_metricas(x, y, model, dataset_name):
         "f1_score": f1_score(y, y_pred, zero_division=0),
     }
 
-    # Calculamos la matriz de confusión
     cm = confusion_matrix(y, y_pred)
     matriz = {
         "type": "cm_matrix",
@@ -235,3 +218,4 @@ with open("files/output/metrics.json", "w") as f:
 fin = time.time()
 print(fin - inicio)
 print("fin")
+print("Mejores parámetros:", grid_search.best_params_)
